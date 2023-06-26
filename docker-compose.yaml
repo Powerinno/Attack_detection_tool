@@ -1,0 +1,99 @@
+version: '3.6'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.9
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    networks:
+      - localnet
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  broker:
+    image: confluentinc/cp-enterprise-kafka:7.0.9
+    hostname: broker
+    container_name: broker
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+      - "9092:9092"
+    networks:
+      - localnet
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:9092,PLAINTEXT_HOST://192.168.0.238:29092
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: broker:9092
+      CONFLUENT_METRICS_REPORTER_ZOOKEEPER_CONNECT: zookeeper:2181
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'true'
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+  
+  init-kafka:
+    image: confluentinc/cp-enterprise-kafka:7.0.9
+    depends_on:
+      - broker
+    entrypoint: [ '/bin/sh', '-c' ]
+    networks:
+      - localnet
+    command: |
+      "
+      # blocks until kafka is reachable
+      kafka-topics --bootstrap-server broker:29092 --list
+
+      echo -e 'Creating kafka topics'
+      kafka-topics --bootstrap-server broker:29092 --create --if-not-exists --topic osquery.events --replication-factor 1 --partitions 5
+      kafka-topics --bootstrap-server broker:29092 --create --if-not-exists --topic loki.events --replication-factor 1 --partitions 5
+      kafka-topics --bootstrap-server broker:29092 --create --if-not-exists --topic alerts.events --replication-factor 1 --partitions 5
+      
+      echo -e 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server broker:29092 --list
+      "
+
+  promtail:
+    image: grafana/promtail:latest
+    depends_on:
+      - broker
+    restart: always
+    volumes:
+      - ./promtail-config1.yml:/etc/promtail/promtail-config.yml
+      - ./log_from_promtail1:/var/logtest:ro
+    entrypoint:
+      - /usr/bin/promtail
+      - -config.expand-env=true
+      - -config.file=/etc/promtail/promtail-config.yml
+    networks:
+      - localnet
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - 3000:3000
+    networks:
+      - localnet
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=parola
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - 3100:3100
+    networks:
+      - localnet
+    volumes:
+      - ./loki_config:/etc/loki
+    command: -config.file=/etc/loki/loki-config.yml
+
+networks:
+  localnet:
+    attachable: true
+
+# kafka-topics --create --zookeeper zookeeper:2181 --topic grafana -partitions 3 -replication-factor 1
